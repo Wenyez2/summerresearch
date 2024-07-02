@@ -1,0 +1,116 @@
+import sys,os
+import cloudpss
+import json
+import time
+import random
+
+# 设置 API 令牌和 URL
+cloudpss.setToken('eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ODg1MSwidXNlcm5hbWUiOiJ3ZW55ZTIyIiwic2NvcGVzIjpbIm1vZGVsOjk4MzY3IiwiZnVuY3Rpb246OTgzNjciLCJhcHBsaWNhdGlvbjozMjgzMSJdLCJyb2xlcyI6WyJ3ZW55ZTIyIl0sInR5cGUiOiJhcHBseSIsImV4cCI6MTcyMTYyMDQ5Nywibm90ZSI6IlNESyBUb2tlbiIsImlhdCI6MTcxOTAyODQ5N30.lOs2lBOnA31Z3PgMXED6OdrDI6LcQOXFElh2ukGTRhormgscOnVMYF4rVPtsNBcYlPzmFJ-dwRfwxSp62BqRZw')
+os.environ['CLOUDPSS_API_URL'] = 'https://cloudpss.net'
+
+# 加载电力系统模型
+def load_system_model(model_path):
+    try:
+        model = cloudpss.Model.fetch(model_path)
+        print(f"模型 '{model_path}' 成功加载。")
+        return model
+    except Exception as e:
+        print(f"无法加载模型 '{model_path}'。错误: {e}")
+        sys.exit(1)
+
+# 随机改变负载功耗（比例在0.8到1.2之间）
+def randomize_loads(model, min_factor=0.8, max_factor=1.2):  
+    component_keys = ['canvas_0_1083', 'canvas_0_1084', 'canvas_0_1085']
+    for key in component_keys:
+        comp = model.getComponentByKey(key)
+        if comp is None:
+            print(f"组件 {key} 未找到")
+            continue
+        original_p = float(comp.args['p']['source'])
+        original_q = float(comp.args['q']['source'])
+        factor = random.uniform(min_factor, max_factor)
+        comp.args['p']['source'] = str(original_p * factor)
+        comp.args['q']['source'] = str(original_p * factor)
+        print(comp.args)
+    print("负载功耗随机调整完成")
+
+# 等比调整PV节点发电机的出力水平
+def adjust_generators(model, original_load_sum, new_load_sum):
+    component_keys = ['canvas_0_757', 'canvas_0_762', 'canvas_0_766']
+    for key in component_keys:
+        generator = model.getComponentByKey(key)
+        if generator is None:
+            print(f"组件 {key} 未找到")
+            continue
+        if generator.args['BusType'] == '1':
+            original_p = float(generator.args['pf_P']['source'])
+            adjustment_factor = new_load_sum / original_load_sum
+            generator.args['pf_P']['source'] = str(original_p * adjustment_factor)
+    print("发电机输出调整完成")
+
+# 计算系统中的总负载
+def calculate_total_load(model):
+    total_load_p = 0.0
+    component_keys = ['canvas_0_1083', 'canvas_0_1084', 'canvas_0_1085']
+    for key in component_keys:
+        comp = model.getComponentByKey(key)
+        total_load_p += float(comp.args['p']['source'])
+    return total_load_p
+
+# 启动潮流计算任务
+def run_power_flow(model):
+    config = model.configs[0]
+    job = model.jobs[0]
+    runner = model.run(job, config)
+
+    while not runner.status():
+        logs = runner.result.getLogs()
+        for log in logs:
+            print(log)
+        time.sleep(1)
+
+    return runner
+
+# 输出结果
+def output_results(runner):
+    branches = runner.result.getBranches()
+    buses = runner.result.getBuses()
+    
+    print("系统支路信息:")
+    for branch in branches:
+        print(branch)
+    
+    print("系统节点信息:")
+    for bus in buses:
+        print(bus)
+
+def main():
+    # 步骤1：加载系统模型
+    model_path = 'model/wenye22/my-project2'  # 替换为实际的模型路径
+    model = load_system_model(model_path)
+    
+    # 步骤2：记录初始负载总和
+    original_load_sum = calculate_total_load(model)
+
+    # 步骤3：随机改变负载功耗
+    randomize_loads(model)
+
+    # 步骤4：计算新的负载总和
+    new_load_sum = calculate_total_load(model)
+
+    # 步骤5：调整发电机出力
+    adjust_generators(model, original_load_sum, new_load_sum)
+
+    # 步骤6：运行潮流计算
+    runner = run_power_flow(model)
+    if runner.result != []:
+        print("系统潮流收敛")
+    else:
+        print("系统潮流未收敛")
+
+    # 步骤7：输出结果
+    output_results(runner)
+
+if __name__ == "__main__":
+    main()
+
